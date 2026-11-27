@@ -129,6 +129,25 @@ jobs:
       - name: 安装 Nuitka
         run: python -m pip install --disable-pip-version-check -q nuitka
 
+      # 方案 B：把本次发布号写进 __version__ 再编译，装机包里就是真实版本。
+      - name: 注入发布版本号
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          python - "$VERSION" <<'PY'
+          import io, re, sys
+          ver = sys.argv[1]
+          path = "cdbg/__init__.py"
+          src = io.open(path, encoding="utf-8").read()
+          new, n = re.subn(r'__version__\s*=\s*"[^"]*"',
+                           '__version__ = "%s"' % ver, src, count=1)
+          assert n == 1, "没找到 __version__ 行"
+          io.open(path, "w", encoding="utf-8", newline="").write(new)
+          print("已注入 __version__ =", ver)
+          PY
+          grep __version__ cdbg/__init__.py
+
       - name: 编译并打包（standalone -> zip）
         run: python tools/build_standalone.py --output build_out --msvc
 
@@ -147,6 +166,7 @@ jobs:
           SHA: ${{ needs.check.outputs.head_sha }}
           PREV_SHA: ${{ needs.check.outputs.prev_sha }}
           VERSION: ${{ needs.check.outputs.version }}
+          REPO: ${{ github.repository }}
         shell: bash
         run: |
           TAG="v$VERSION"
@@ -175,14 +195,38 @@ jobs:
             done <<< "$COMMITS"
           } > "$NOTES_FILE"
 
+          # 更新器元数据：一个文件同时带 版本/直链/sha256/大小/更新日志。
+          # updater.py 检查的就是 releases/latest/download/versions.json。
+          python - "$ASSET" "$VERSION" "$NOTES_FILE" <<'PY'
+          import hashlib, json, os, sys
+          asset, version, notes_path = sys.argv[1:4]
+          blob = open(asset, "rb").read()
+          name = os.path.basename(asset)
+          repo = os.environ["REPO"]
+          meta = {
+              "version": version,
+              "url": "https://github.com/%s/releases/download/v%s/%s"
+                     % (repo, version, name),
+              "sha256": hashlib.sha256(blob).hexdigest(),
+              "size": len(blob),
+              "changelog": open(notes_path, encoding="utf-8").read(),
+              "notes_url": "https://github.com/%s/releases/tag/v%s"
+                           % (repo, version),
+          }
+          with open("versions.json", "w", encoding="utf-8") as fh:
+              json.dump(meta, fh, ensure_ascii=False, indent=2)
+          print("versions.json: v%s  %s  %d bytes"
+                % (version, meta["sha256"][:12], meta["size"]))
+          PY
+
           # tag 指向本 commit，zip 与自动生成的源码包对应同一份代码；
           # 不带 --prerelease，GitHub 会把它标记为 Latest。
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ASSET" --clobber
+            gh release upload "$TAG" "$ASSET" versions.json --clobber
             gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
             echo "已更新正式版 $TAG"
           else
-            gh release create "$TAG" "$ASSET" \
+            gh release create "$TAG" "$ASSET" versions.json \
               --target "$SHA" \
               --title "$TITLE" \
               --notes-file "$NOTES_FILE"

@@ -53,7 +53,8 @@ def write_readme(dist: Path) -> None:
 用法
 ----
 1) 把 .c 源文件拖到 cdbg.exe 上；或
-2) 命令行： cdbg.exe 你的程序.c
+2) 把 .c 源文件拖到 start.bat 上（cdbg.exe 被占用 / 出问题时的兜底入口）；或
+3) 命令行： cdbg.exe 你的程序.c
 
 第一次运行会自动扫描本机的 gcc / gdb（gdb 需带 Python 支持），
 把结果写到同目录的 config\\toolchain.conf。之后再运行直接读它。
@@ -63,6 +64,39 @@ def write_readme(dist: Path) -> None:
 完整说明见项目仓库的 README.md。
 """
     (dist / "README.txt").write_text(text, encoding="utf-8")
+
+
+def write_start_bat(dist: Path) -> None:
+    """启动兜底入口：源码树有 start.bat，压缩包里原来丢了，这里补回来。
+
+    平时双击 cdbg.exe 就够；这个脚本是给「exe 被占用 / 损坏 / 拖拽打开方式」
+    留的第二入口 —— bat 不是运行中的进程映像，不会像 exe 那样把自己锁住。
+
+    bat 必须 CRLF + UTF-8（chcp 65001 后生效），跟源码树的 start.bat 一致。
+    """
+    lines = [
+        "@echo off",
+        "chcp 65001 >nul",
+        "setlocal",
+        'set "SCRIPT_DIR=%~dp0"',
+        "",
+        'if not exist "%SCRIPT_DIR%cdbg.exe" (',
+        "    echo [cdbg] 找不到 cdbg.exe，请确认解压完整",
+        "    pause",
+        "    exit /b 1",
+        ")",
+        "",
+        'if "%~1"=="" (',
+        "    echo 用法：把 .c 源文件拖到本文件上，或直接运行 cdbg.exe",
+        "    pause",
+        "    exit /b 1",
+        ")",
+        "",
+        '"%SCRIPT_DIR%cdbg.exe" %*',
+        "if errorlevel 1 pause",
+        "endlocal",
+    ]
+    (dist / "start.bat").write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
 
 
 def build(args) -> Path:
@@ -95,6 +129,7 @@ def build(args) -> Path:
     # config 目录留空（首次运行自动生成 toolchain.conf）
     (dist / "config").mkdir(exist_ok=True)
     write_readme(dist)
+    write_start_bat(dist)
     print("[build] dist 就绪: %s" % dist, flush=True)
     return dist
 

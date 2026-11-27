@@ -112,7 +112,15 @@ def print_headless(snapshot):
 
 
 def main(argv=None):
-    args = parse_args(argv if argv is not None else sys.argv[1:])
+    argv = argv if argv is not None else sys.argv[1:]
+
+    # ---- 更新器的后台下载进程：不进调试流程，下载完就退出 ----
+    if "--download-update" in argv:
+        from cdbg import updater
+
+        return updater.run_download_worker()
+
+    args = parse_args(argv)
 
     # ---- 工具链自检 / 重扫：不调试，跑完就退 ----
     if args.scan_compiler:
@@ -148,6 +156,14 @@ def main(argv=None):
         return 2
 
     print(BANNER)
+
+    # 版本检查走后台线程：编译那几秒正好用来联网，不拖慢启动。
+    # --headless 不查 —— 那是给 IDE 读的机器输出，别往里掺废话。
+    update_check = None
+    if not args.headless:
+        from cdbg import updater
+
+        update_check = updater.start_check()
 
     session = DebugSession(
         source=source,
@@ -222,7 +238,12 @@ def main(argv=None):
     httpd, port = serve(session, host=args.host, port=args.port)
     url = "http://%s:%d/" % (args.host, port)
     print("\n  可视化界面: %s" % url)
-    print("  按 Ctrl+C 结束调试会话\n")
+    print("  按 Ctrl+C 结束调试会话")
+    if update_check is not None:
+        from cdbg import updater
+
+        updater.print_status(update_check)
+    print()
 
     if not args.no_browser:
         if not open_browser(url):
@@ -248,6 +269,10 @@ def main(argv=None):
                 exit_reported = True
                 print("  程序已退出。调试会话仍在运行，可查看最终状态。")
     except KeyboardInterrupt:
+        if update_check is not None:
+            from cdbg import updater
+
+            updater.prompt_on_exit(update_check)
         print("\n正在结束...")
     finally:
         httpd.shutdown()
